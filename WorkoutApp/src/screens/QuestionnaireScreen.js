@@ -35,6 +35,7 @@ export default function QuestionnaireScreen({ navigation }) {
         <Picker.Item label="Beginner" value="Beginner" />
         <Picker.Item label="Intermediate" value="Intermediate" />
         <Picker.Item label="Advanced" value="Advanced" />
+        <Picker.Item label="Expert" value="Expert" />
       </Picker>
 
       <View style={styles.buttonContainer}>
