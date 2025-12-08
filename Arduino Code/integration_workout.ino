@@ -29,7 +29,7 @@ int BPM = 0;
 bool beatDetected = false;
 
 // Initializing the Speaker 
-int buzzerPin = 12;
+int buzzerPin = 7;
 
 // Safe Ranges
 #define BPM_LOW   50
