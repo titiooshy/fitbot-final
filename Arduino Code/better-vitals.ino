@@ -1,4 +1,4 @@
-// Included Libraries for the code 
+// INCLUDED LIBRARIES
 #include <SPI.h>
 #include <Wire.h>
 #include <WiFi.h>
@@ -6,41 +6,45 @@
 #include <Adafruit_SH110X.h>
 #include <Adafruit_LPS2X.h>
 #include <Adafruit_Sensor.h>
+#include "MAX30105.h"
+#include "heartRate.h"
 
-// Initializing the OLED Screen 
+// OLED SETUP
 #define SCREEN_WIDTH 128
 #define SCREEN_HEIGHT 128
 Adafruit_SH1107 display = Adafruit_SH1107(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
-// Initializing the Pressure and Temperature Sensor
-#define LPS_CS   10
-#define LPS_SCK  13
-#define LPS_MISO 12
-#define LPS_MOSI 11
+// PRESSURE + TEMP SENSOR
 Adafruit_LPS22 lps;
 
-// Initializing the Pulse Sensor
-#define PULSE_PIN 0   // change to 34 on ESP32
-int pulseSignal;
-int pulseThreshold = 550;
+// MAX30102 HEART RATE
+MAX30105 particleSensor;
 
-unsigned long lastBeatTime = 0;
+const byte RATE_SIZE = 4;
+byte rates[RATE_SIZE];
+byte rateSpot = 0;
+long lastBeat = 0;
+float beatsPerMinute;
 int BPM = 0;
-bool beatDetected = false;
 
-// Initializing the Speaker 
+// TEMPERATURE AVERAGING
+#define TEMP_SAMPLES 10
+float tempBuffer[TEMP_SAMPLES];
+int tempIndex = 0;
+bool tempBufferFilled = false;
+float avgTempC = 0.0;
+
+// BUZZER
 int buzzerPin = 7;
 
-// Safe Ranges
+// SAFE RANGES
 #define BPM_LOW   50
 #define BPM_HIGH  120
-
 #define TEMP_LOW  35.0
 #define TEMP_HIGH 39.0
 
 unsigned long lastAlertTime = 0;
 unsigned long alertCooldown = 5000;
-//------------------------------------------------------------------------------
 
 // WORKOUT SYSTEM
 enum WorkoutPhase { WORK, COOLDOWN };
@@ -49,40 +53,30 @@ WorkoutPhase workoutPhase = WORK;
 const char* workouts[] = {"PUSH-UPS", "SIT-UPS", "JUMP JACKS"};
 int currentWorkout = 0;
 
-const unsigned long WORK_TIME = 300000;     // 5 min
-const unsigned long COOLDOWN_TIME = 300000; // 5 min
+const unsigned long WORK_TIME = 300000;
+const unsigned long COOLDOWN_TIME = 300000;
 
 unsigned long phaseStartTime = 0;
 bool workoutRunning = false;
-//------------------------------------------------------------------------------
 
-// Screen Layout 
+// SCREENS
 enum Screen { HOME, VITALS, EXERCISE, SCREEN_COUNT };
 Screen currentScreen = HOME;
 
 unsigned long lastSwitch = 0;
 unsigned long interval = 2500;
 
-// WIFI and Time Setup
+// WIFI + TIME
 const char* ssid     = "OLIN-DEVICES";
 const char* password = "BestOval4Engineers!";
 
-bool getRTC(struct tm * timeinfo) {
-  return getLocalTime(timeinfo);
-}
-
-// Speaker Musical Notes
+// NOTES
 #define NOTE_C5 523
-#define NOTE_D5 587
-#define NOTE_E5 659
-#define NOTE_G5 784
 #define NOTE_A5 880
-
 #define NOTE_C4 262
 #define NOTE_E4 330
 #define NOTE_G4 392
 #define NOTE_C6 1047
-//------------------------------------------------------------------------------
 
 // ALERT SOUNDS
 void playBPMAlert() {
@@ -104,9 +98,8 @@ void playTempAlert() {
   delay(400);
   noTone(buzzerPin);
 }
-//------------------------------------------------------------------------------
 
-// Screen Header
+// HEADER
 void drawHeader(const char* title) {
   display.fillRect(0, 0, 128, 14, SH110X_WHITE);
   display.setTextColor(SH110X_BLACK);
@@ -115,7 +108,27 @@ void drawHeader(const char* title) {
   display.println(title);
   display.setTextColor(SH110X_WHITE);
 }
-//------------------------------------------------------------------------------
+
+// TEMP AVERAGING FUNCTION
+float getAveragedTemperature() {
+  sensors_event_t temp, pressure;
+  lps.getEvent(&pressure, &temp);
+
+  tempBuffer[tempIndex++] = temp.temperature;
+
+  if (tempIndex >= TEMP_SAMPLES) {
+    tempIndex = 0;
+    tempBufferFilled = true;
+  }
+
+  int count = tempBufferFilled ? TEMP_SAMPLES : tempIndex;
+  float sum = 0;
+
+  for (int i = 0; i < count; i++)
+    sum += tempBuffer[i];
+
+  return sum / count;
+}
 
 // HOME SCREEN
 void drawHome() {
@@ -123,7 +136,7 @@ void drawHome() {
   drawHeader("HOME");
 
   struct tm timeinfo;
-  if (getRTC(&timeinfo)) {
+  if (getLocalTime(&timeinfo)) {
     char timeStr[8];
     strftime(timeStr, sizeof(timeStr), "%I:%M %p", &timeinfo);
     if (timeStr[0] == '0') for (int i = 0; i < 7; i++) timeStr[i] = timeStr[i + 1];
@@ -146,7 +159,6 @@ void drawHome() {
   display.println("Swipe or wait");
   display.display();
 }
-//-----------------------------------------------------------------------------
 
 // VITALS SCREEN
 void drawVitals(float tempC, float pressureHPA, int bpm) {
@@ -154,23 +166,22 @@ void drawVitals(float tempC, float pressureHPA, int bpm) {
   drawHeader("VITALS");
 
   display.setCursor(10, 20);
-  display.setTextSize(1);
   display.println("Temp:");
   display.setCursor(10, 35);
   display.setTextSize(2);
   display.print(tempC, 1);
   display.println(" C");
 
-  display.setCursor(10, 60);
   display.setTextSize(1);
+  display.setCursor(10, 60);
   display.println("Pressure:");
   display.setCursor(10, 75);
   display.setTextSize(2);
   display.print(pressureHPA, 1);
   display.println(" hPa");
 
-  display.setCursor(10, 100);
   display.setTextSize(1);
+  display.setCursor(10, 100);
   display.println("Heart Rate:");
   display.setCursor(10, 115);
   display.setTextSize(2);
@@ -180,12 +191,9 @@ void drawVitals(float tempC, float pressureHPA, int bpm) {
   display.display();
 }
 
-//------------------------------------------------------------------------------
-
-// WORKOUT + COOLDOWN SCREEN
+// WORKOUT SCREEN
 void drawWorkoutScreen(int bpm) {
   display.clearDisplay();
-
   drawHeader(workoutPhase == WORK ? workouts[currentWorkout] : "COOLDOWN");
 
   unsigned long now = millis();
@@ -201,10 +209,7 @@ void drawWorkoutScreen(int bpm) {
   display.print("TIME");
 
   display.setCursor(25, 55);
-  if (sec < 10)
-    display.printf("%d:0%d", min, sec);
-  else
-    display.printf("%d:%d", min, sec);
+  display.printf("%d:%02d", min, sec);
 
   display.setCursor(35, 85);
   display.setTextSize(1);
@@ -216,19 +221,13 @@ void drawWorkoutScreen(int bpm) {
 
   display.display();
 
-  // AUTO SWITCH
   if (elapsed >= phaseLength) {
     phaseStartTime = now;
-
-    if (workoutPhase == WORK) {
-      workoutPhase = COOLDOWN;
-    } else {
-      workoutPhase = WORK;
+    workoutPhase = (workoutPhase == WORK) ? COOLDOWN : WORK;
+    if (workoutPhase == WORK)
       currentWorkout = (currentWorkout + 1) % 3;
-    }
   }
 }
-//------------------------------------------------------------------------------
 
 // SETUP
 void setup() {
@@ -244,13 +243,16 @@ void setup() {
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) delay(200);
 
-  const long gmtOffset_sec = -5 * 3600;
-  configTime(gmtOffset_sec, 0, "pool.ntp.org", "time.nist.gov");
+  configTime(-5 * 3600, 0, "pool.ntp.org", "time.nist.gov");
 
-  if (!lps.begin_SPI(LPS_CS, LPS_SCK, LPS_MISO, LPS_MOSI)) while (1);
+  if (!lps.begin_SPI(10, 13, 12, 11)) while (1);
   lps.setDataRate(LPS22_RATE_10_HZ);
+
+  if (!particleSensor.begin(Wire, I2C_SPEED_FAST)) while (1);
+  particleSensor.setup();
+  particleSensor.setPulseAmplitudeRed(0x0A);
+  particleSensor.setPulseAmplitudeGreen(0);
 }
-//------------------------------------------------------------------------------
 
 // LOOP
 void loop() {
@@ -261,36 +263,45 @@ void loop() {
     lastSwitch = now;
   }
 
-  pulseSignal = analogRead(PULSE_PIN);
+  // ---- HEART RATE ----
+  long irValue = particleSensor.getIR();
 
-  if (pulseSignal > pulseThreshold && !beatDetected) {
-    unsigned long beatNow = millis();
-    unsigned long delta = beatNow - lastBeatTime;
-    lastBeatTime = beatNow;
+  if (irValue > 7000 && checkForBeat(irValue)) {
+    long delta = millis() - lastBeat;
+    lastBeat = millis();
 
-    if (delta > 300) {
-      BPM = 60000 / delta;
-      beatDetected = true;
+    beatsPerMinute = 60 / (delta / 1000.0);
+
+    if (beatsPerMinute > 20 && beatsPerMinute < 255) {
+      rates[rateSpot++] = (byte)beatsPerMinute;
+      rateSpot %= RATE_SIZE;
+
+      BPM = 0;
+      for (byte i = 0; i < RATE_SIZE; i++) BPM += rates[i];
+      BPM /= RATE_SIZE;
     }
+
+    tone(buzzerPin, NOTE_C5, 40);
   }
 
-  if (pulseSignal < pulseThreshold) {
-    beatDetected = false;
-  }
+  // ---- TEMPERATURE ----
+  avgTempC = getAveragedTemperature();
 
+  // ---- PRESSURE ----
   sensors_event_t temp, pressure;
-  lps.getEvent(&pressure, &temp);  // Get the average of lots of reading within a time span
+  lps.getEvent(&pressure, &temp);
 
+  // ---- ALERTS ----
   if (now - lastAlertTime > alertCooldown) {
     if (BPM < BPM_LOW || BPM > BPM_HIGH) playBPMAlert();
-    if (temp.temperature < TEMP_LOW || temp.temperature > TEMP_HIGH) playTempAlert();
+    if (avgTempC < TEMP_LOW || avgTempC > TEMP_HIGH) playTempAlert();
     lastAlertTime = now;
   }
 
+  // ---- SCREENS ----
   switch (currentScreen) {
-    case HOME:   drawHome(); break;
-    case VITALS: drawVitals(temp.temperature, pressure.pressure, BPM); break;
-
+    case HOME: drawHome(); break;
+    case VITALS: drawVitals(avgTempC, pressure.pressure, BPM); break;
     case EXERCISE:
       if (!workoutRunning) {
         workoutRunning = true;
